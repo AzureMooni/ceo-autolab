@@ -33,36 +33,64 @@ ${sampleText}
 }
 `;
 
-    const response = await fetch(`${freellmUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${freellmKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: "당신은 문체 복제(Style Cloning) 전문 언어학자이자 카피라이터입니다. 반드시 지정된 JSON 포맷으로만 응답하세요.",
-          },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.3,
-      }),
-    });
+    let content = "";
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error("FreeLLMAPI analyze-style failed:", errText);
-      return NextResponse.json(
-        { error: "문체 분석 중 AI 응답 오류가 발생했습니다." },
-        { status: 502 }
-      );
+    // 1. Try local FreeLLMAPI first
+    try {
+      const response = await fetch(`${freellmUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${freellmKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: "당신은 문체 복제(Style Cloning) 전문 언어학자이자 카피라이터입니다. 반드시 지정된 JSON 포맷으로만 응답하세요.",
+            },
+            { role: "user", content: prompt },
+          ],
+          temperature: 0.3,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        content = data.choices?.[0]?.message?.content || "";
+      }
+    } catch (e) {
+      console.warn("Local FreeLLMAPI unavailable for analyze-style, attempting fallback...");
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || "";
+    // 2. Production Fallback to Gemini API
+    if (!content && process.env.GEMINI_API_KEY) {
+      try {
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: "당신은 문체 복제 전문 카피라이터입니다. 반드시 지정된 JSON 포맷으로만 응답하세요." }] },
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: {
+                temperature: 0.3,
+                responseMimeType: "application/json",
+              },
+            }),
+          }
+        );
+
+        if (geminiRes.ok) {
+          const geminiData = await geminiRes.json();
+          content = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        }
+      } catch (geminiErr) {
+        console.error("Gemini Fallback failed for analyze-style:", geminiErr);
+      }
+    }
 
     // Parse JSON
     let parsedJson;

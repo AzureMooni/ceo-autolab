@@ -92,34 +92,72 @@ ${JSON.stringify(
 위 내용을 바탕으로 네이버 블로그 HTML(스마트에디터 인라인 CSS + 사진 배치 마커 3개), 스레드 450자 단문, 인스타그램 캡션을 즉시 작성하여 JSON으로 반환해주세요.
 `;
 
-    const response = await fetch(`${freellmUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${freellmKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: 0.6,
-        response_format: { type: "json_object" },
-      }),
-    });
+    let rawContent = "";
+    let modelUsed = model;
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.error("FreeLLMAPI generate failed:", errBody);
+    // 1. Try local FreeLLMAPI first
+    try {
+      const response = await fetch(`${freellmUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${freellmKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userPrompt },
+          ],
+          temperature: 0.6,
+          response_format: { type: "json_object" },
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        rawContent = data.choices?.[0]?.message?.content || "";
+        modelUsed = data.model || model;
+      }
+    } catch (localErr) {
+      console.warn("Local FreeLLMAPI unreachable, attempting Gemini fallback...");
+    }
+
+    // 2. Production Fallback to Gemini 1.5 Flash (0-cost tier)
+    if (!rawContent && process.env.GEMINI_API_KEY) {
+      try {
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+              contents: [{ parts: [{ text: userPrompt }] }],
+              generationConfig: {
+                temperature: 0.6,
+                responseMimeType: "application/json",
+              },
+            }),
+          }
+        );
+
+        if (geminiRes.ok) {
+          const geminiData = await geminiRes.json();
+          rawContent = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          modelUsed = "gemini-1.5-flash (Cloud Free Tier)";
+        }
+      } catch (geminiErr) {
+        console.error("Gemini Fallback failed:", geminiErr);
+      }
+    }
+
+    if (!rawContent) {
       return NextResponse.json(
         { error: "원고 생성 엔진 호출 중 오류가 발생했습니다." },
         { status: 502 }
       );
     }
-
-    const data = await response.json();
-    const rawContent = data.choices?.[0]?.message?.content || "";
 
     let generated;
     try {
