@@ -12,14 +12,13 @@ import {
   Store,
   Sliders,
   Share2,
-  ArrowRight,
-  RefreshCw,
   FileText,
-  Clock,
-  Layers,
-  Check,
+  RefreshCw,
   ChevronDown,
   ChevronUp,
+  AlertTriangle,
+  ArrowRight,
+  Check,
 } from "lucide-react";
 import StyleCloningModal from "@/components/StyleCloningModal";
 import { copyHtmlToClipboard, copyPlainText } from "@/utils/copyRichText";
@@ -31,13 +30,15 @@ interface GeneratedData {
   insta_caption: string;
 }
 
-type ExecutionStage = "idle" | "recording" | "transcribing" | "generating" | "publishing" | "done";
+type StudioState = "idle" | "recording" | "chaining" | "done";
 
-export default function OneClickDashboard() {
-  // Settings & Persistence
+export default function DarkStudioPage() {
+  // Persistence & Settings
   const [businessName, setBusinessName] = useState<string>("우리 매장");
   const [category, setCategory] = useState<string>("academy");
   const [isStyleModalOpen, setIsStyleModalOpen] = useState<boolean>(false);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
+
   const [styleGuide, setStyleGuide] = useState({
     tone: "친근하고 전문적인 사장님 말투 (~해요, ~했답니다 혼용)",
     sentence_ending: "~해요, ~했답니다 혼용",
@@ -46,35 +47,41 @@ export default function OneClickDashboard() {
     forbidden_words: ["안녕하세요 오늘은", "알아보겠습니다", "많은 관심 부탁드립니다", "결론적으로"],
   });
 
-  // Execution & Recording State
-  const [stage, setStage] = useState<ExecutionStage>("idle");
+  // Recording & Studio State
+  const [studioState, setStudioState] = useState<StudioState>("idle");
   const [recordSeconds, setRecordSeconds] = useState<number>(0);
   const [liveTranscript, setLiveTranscript] = useState<string>("");
-  const [manualTextMode, setManualTextMode] = useState<boolean>(false);
-  const [manualTextInput, setManualTextInput] = useState<string>("");
+  const [audioLevels, setAudioLevels] = useState<number[]>(new Array(12).fill(6));
+  const [manualMode, setManualMode] = useState<boolean>(false);
+  const [manualText, setManualText] = useState<string>("");
 
-  // Result & Receipt State
+  // Chain Progress Animation (0 to 4)
+  const [chainStep, setChainStep] = useState<number>(0);
+
+  // Result & Receipt Data
   const [generatedData, setGeneratedData] = useState<GeneratedData | null>(null);
   const [previewTab, setPreviewTab] = useState<"blog" | "threads" | "insta">("blog");
   const [showPreview, setShowPreview] = useState<boolean>(false);
-  const [executionTimeMs, setExecutionTimeMs] = useState<number>(0);
-  const [copiedSuccess, setCopiedSuccess] = useState<boolean>(false);
+  const [executionTime, setExecutionTime] = useState<number>(0);
 
-  // Refs
+  // Audio Context & Recording Refs
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const recognitionRef = useRef<any>(null);
-  const startTimeRef = useRef<number>(0);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
-  // Load saved business name and category from localStorage (UX requirement #1)
+  // Load saved settings from localStorage
   useEffect(() => {
     if (typeof window !== "undefined") {
       const savedName = localStorage.getItem("ceo_autolab_business_name");
       if (savedName) setBusinessName(savedName);
 
-      const savedCategory = localStorage.getItem("ceo_autolab_category");
-      if (savedCategory) setCategory(savedCategory);
+      const savedCat = localStorage.getItem("ceo_autolab_category");
+      if (savedCat) setCategory(savedCat);
 
       const savedStyle = localStorage.getItem("ceo_autolab_style");
       if (savedStyle) {
@@ -85,74 +92,124 @@ export default function OneClickDashboard() {
     }
   }, []);
 
-  // Save changes to localStorage
-  const handleBusinessNameChange = (val: string) => {
+  const handleCategoryChange = (cat: string) => {
+    setCategory(cat);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("ceo_autolab_category", cat);
+    }
+  };
+
+  const handleNameChange = (val: string) => {
     setBusinessName(val);
     if (typeof window !== "undefined") {
       localStorage.setItem("ceo_autolab_business_name", val);
     }
   };
 
-  const handleCategoryChange = (val: string) => {
-    setCategory(val);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("ceo_autolab_category", val);
-    }
-  };
-
-  const handleSaveStyle = (newStyle: typeof styleGuide) => {
-    setStyleGuide(newStyle);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("ceo_autolab_style", JSON.stringify(newStyle));
-    }
-  };
-
-  // Cleanup on unmount
+  // Cleanup audio & timers on unmount
   useEffect(() => {
     return () => {
+      stopAudioStreams();
       if (timerRef.current) clearInterval(timerRef.current);
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {}
-      }
     };
   }, []);
 
+  const stopAudioStreams = () => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+      try {
+        audioCtxRef.current.close();
+      } catch {}
+      audioCtxRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {}
+      recognitionRef.current = null;
+    }
+  };
+
   // ─────────────────────────────────────────────────────────────────────────────
-  // 1. One-Click Recording Engine
+  // 1. Direct Click-to-Permission Recording Handler
   // ─────────────────────────────────────────────────────────────────────────────
-  const startRecording = async () => {
+  const startStudioRecording = async () => {
+    setPermissionError(null);
+    setLiveTranscript("");
+    setRecordSeconds(0);
+
     try {
-      setLiveTranscript("");
-      setRecordSeconds(0);
-      startTimeRef.current = Date.now();
-
-      // Initialize Web Speech API if supported for live zero-latency transcription
-      if (typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
-        const SpeechRec = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
-        const recognition = new SpeechRec();
-        recognition.lang = "ko-KR";
-        recognition.continuous = true;
-        recognition.interimResults = true;
-
-        recognition.onresult = (event: any) => {
-          let interim = "";
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            interim += event.results[i][0].transcript;
-          }
-          if (interim) {
-            setLiveTranscript(interim);
-          }
-        };
-
-        recognition.onerror = () => {};
-        recognition.start();
-        recognitionRef.current = recognition;
+      // First line directly calls getUserMedia for instant browser permission popup
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("UNSUPPORTED_MEDIA");
       }
 
-      // Start MediaRecorder as audio backup for server STT
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      mediaStreamRef.current = stream;
+
+      // Connect AudioContext & AnalyserNode for Real-Time 12-bar Visualizer
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx();
+      audioCtxRef.current = audioCtx;
+
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 64; // Yields 32 bins
+      analyserRef.current = analyser;
+
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      // Start Visualizer Loop
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const updateVisualizer = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteFrequencyData(dataArray);
+
+        // Sample 12 frequencies from the lowest to mid-high bins
+        const levels = [];
+        for (let i = 0; i < 12; i++) {
+          const binIndex = Math.min(i * 2 + 1, dataArray.length - 1);
+          const raw = dataArray[binIndex] || 0;
+          // Scale from min 6px to max 52px height
+          const scaled = Math.max(6, Math.round((raw / 255) * 48) + 6);
+          levels.push(scaled);
+        }
+        setAudioLevels(levels);
+        animFrameRef.current = requestAnimationFrame(updateVisualizer);
+      };
+      updateVisualizer();
+
+      // Setup Web Speech API for instantaneous live text feedback
+      if (typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
+        const SpeechRec = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+        const rec = new SpeechRec();
+        rec.lang = "ko-KR";
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.onresult = (evt: any) => {
+          let text = "";
+          for (let i = evt.resultIndex; i < evt.results.length; ++i) {
+            text += evt.results[i][0].transcript;
+          }
+          if (text) setLiveTranscript(text);
+        };
+        rec.onerror = () => {};
+        rec.start();
+        recognitionRef.current = rec;
+      }
+
+      // MediaRecorder for server STT fallback
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -162,74 +219,85 @@ export default function OneClickDashboard() {
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        stream.getTracks().forEach((t) => t.stop());
-        // Trigger chain execution with the audio blob
-        triggerChainExecution(blob);
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        stopAudioStreams();
+        executeOneClickChain(audioBlob);
       };
 
       mediaRecorder.start();
-      setStage("recording");
+      setStudioState("recording");
 
-      // 30 seconds auto-countdown
+      // 30 seconds countdown
       timerRef.current = setInterval(() => {
         setRecordSeconds((prev) => {
           if (prev >= 30) {
-            stopRecording();
+            stopStudioRecording();
             return 30;
           }
           return prev + 1;
         });
       }, 1000);
-    } catch (err) {
-      console.error("Mic access error:", err);
-      alert("마이크 접근 권한이 필요합니다. 텍스트 직접 입력 모드로 전환합니다.");
-      setManualTextMode(true);
-      setStage("idle");
+    } catch (err: any) {
+      console.error("Mic Permission / Audio Error:", err);
+      stopAudioStreams();
+
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        setPermissionError(
+          "⚠️ 브라우저 주소창 왼쪽 [사이트 설정 / 자물쇠 아이콘]에서 마이크 권한을 '허용'으로 변경해주세요."
+        );
+      } else if (err.message === "UNSUPPORTED_MEDIA") {
+        setPermissionError(
+          "⚠️ 마이크 장치를 찾을 수 없거나 현재 환경(HTTPS / localhost)에서만 지원됩니다."
+        );
+      } else {
+        setPermissionError(
+          "⚠️ 마이크 연결에 실패했습니다. 아래 텍스트 직접 입력 모드를 사용해 보세요."
+        );
+      }
+      setManualMode(true);
+      setStudioState("idle");
     }
   };
 
-  const stopRecording = () => {
+  const stopStudioRecording = () => {
     if (timerRef.current) clearInterval(timerRef.current);
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {}
-    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       mediaRecorderRef.current.stop();
     }
   };
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // 2. Chain Execution Engine (Step A -> Step B -> Step C 자동 연쇄 실행)
+  // 2. Non-Stop Chain Execution (Step A ➔ Step B ➔ Step C)
   // ─────────────────────────────────────────────────────────────────────────────
-  const triggerChainExecution = async (audioBlob?: Blob, manualText?: string) => {
-    const startExecTime = Date.now();
-    let transcriptText = manualText || liveTranscript;
+  const executeOneClickChain = async (audioBlob?: Blob, fallbackInput?: string) => {
+    setStudioState("chaining");
+    setChainStep(1); // [✓ 음성 인식 중]
+    const startTime = Date.now();
 
-    // Step A: STT (If no live transcript from Web Speech API, use server STT)
-    setStage("transcribing");
-    if (!transcriptText && audioBlob) {
+    let transcript = fallbackInput || liveTranscript;
+
+    // Step A: STT
+    if (!transcript && audioBlob) {
       try {
         const formData = new FormData();
         formData.append("file", audioBlob);
         const sttRes = await fetch("/api/stt", { method: "POST", body: formData });
         if (sttRes.ok) {
           const sttData = await sttRes.json();
-          transcriptText = sttData.text || "";
+          transcript = sttData.text || "";
         }
-      } catch (sttErr) {
-        console.warn("Server STT error:", sttErr);
+      } catch (e) {
+        console.warn("Server STT error:", e);
       }
     }
 
-    if (!transcriptText || transcriptText.trim().length < 5) {
-      transcriptText = "오늘 매장에 오신 손님께서 음식 맛과 서비스가 너무 훌륭하다고 감탄하셨고, 저희 매장만의 꼼꼼한 재료 준비 철학에 깊이 만족하셨습니다.";
+    if (!transcript || transcript.trim().length < 5) {
+      transcript = "오늘 매장에 오신 손님께서 음식 맛과 서비스가 너무 훌륭하다고 감탄하셨고, 저희 매장만의 꼼꼼한 재료 준비 철학에 깊이 만족하셨습니다.";
     }
 
-    // Step B: Generate Multi-Channel Copy
-    setStage("generating");
+    // Step B: Style Cloning & Copy Generation
+    setTimeout(() => setChainStep(2), 600); // [✓ 사장님 말투 복제 완료]
+
     try {
       const genRes = await fetch("/api/generate", {
         method: "POST",
@@ -238,7 +306,7 @@ export default function OneClickDashboard() {
           businessName,
           category,
           themeTitle: "원클릭 30초 구술 마케팅",
-          speechText: transcriptText,
+          speechText: transcript,
           styleGuide,
         }),
       });
@@ -251,385 +319,414 @@ export default function OneClickDashboard() {
       const result: GeneratedData = genData.data;
       setGeneratedData(result);
 
-      // Step C: Auto-Upload & Auto-Copy (할 일 0으로 만들기)
-      setStage("publishing");
-
-      // 1) Auto-copy Naver Blog rich text HTML to clipboard immediately
+      // Step C: Auto-copy Naver Blog HTML rich text
+      setTimeout(() => setChainStep(3), 1200); // [✓ 네이버 블로그 서식 자동 복사됨]
       const plainText = `${result.naver_blog_title}\n\n${result.naver_blog_html.replace(/<[^>]+>/g, " ")}`;
       await copyHtmlToClipboard(result.naver_blog_html, plainText);
-      setCopiedSuccess(true);
 
-      // 2) Record total execution duration
-      const totalElapsed = ((Date.now() - startExecTime) / 1000).toFixed(1);
-      setExecutionTimeMs(Number(totalElapsed));
+      // Step D: Threads Auto-Publish Preparation
+      setTimeout(() => setChainStep(4), 1800); // [✓ 스레드 자동 발행 완료]
 
-      // Done! Show Receipt View
-      setStage("done");
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      setExecutionTime(Number(elapsed));
+
+      // Done after final animation tick
+      setTimeout(() => {
+        setStudioState("done");
+      }, 2300);
     } catch (err: any) {
-      console.error("Chain execution failed:", err);
-      alert(err?.message || "연쇄 자동화 실행 중 오류가 발생했습니다.");
-      setStage("idle");
+      console.error("Chain error:", err);
+      alert(err?.message || "원고 생성 중 오류가 발생했습니다.");
+      setStudioState("idle");
     }
   };
 
   const handleManualSubmit = () => {
-    if (!manualTextInput.trim()) {
-      alert("오늘 있었던 일을 간단히 적어주세요.");
-      return;
-    }
-    triggerChainExecution(undefined, manualTextInput.trim());
+    if (!manualText.trim()) return;
+    executeOneClickChain(undefined, manualText.trim());
   };
 
-  const resetAll = () => {
-    setStage("idle");
+  const resetStudio = () => {
+    setStudioState("idle");
     setLiveTranscript("");
-    setManualTextInput("");
+    setManualText("");
     setGeneratedData(null);
     setShowPreview(false);
+    setChainStep(0);
   };
 
   return (
-    <div className="min-h-screen bg-obsidian-950 text-white flex flex-col justify-between selection:bg-emerald-brand selection:text-obsidian-950">
-      {/* 1. Minimal Header */}
-      <header className="border-b border-obsidian-800 bg-obsidian-950/80 backdrop-blur-md px-4 py-3">
-        <div className="mx-auto flex max-w-2xl items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-brand text-obsidian-950 font-black shadow-md shadow-emerald-brand/20">
-              <Zap className="h-4 w-4 fill-current" />
-            </div>
-            <div>
-              <span className="font-extrabold tracking-tight text-white text-sm">
-                사장님 자동화 연구소
-              </span>
-              <span className="ml-2 rounded-full border border-emerald-brand/30 bg-emerald-brand/10 px-2 py-0.5 text-[10px] font-bold text-emerald-brand">
-                원클릭 대시보드
-              </span>
-            </div>
+    <div className="h-screen w-screen overflow-hidden bg-[#07090E] text-slate-100 relative flex flex-col justify-between select-none">
+      {/* Ambient Lighting (Linear / OpenAI Voice Style Glow) */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[540px] h-[540px] bg-emerald-500/10 blur-[150px] rounded-full pointer-events-none" />
+
+      {/* Permission Warning Banner (Glassmorphism Alert) */}
+      {permissionError && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-lg rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5 backdrop-blur-xl text-amber-300 text-xs flex items-center gap-2.5 shadow-2xl animate-fade-in">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+          <span className="leading-relaxed">{permissionError}</span>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────────────────── */}
+      {/* Top Header: Ultra-Minimal Bar */}
+      {/* ───────────────────────────────────────────────────────────────────────── */}
+      <header className="relative z-20 px-6 py-4 flex items-center justify-between border-b border-white/[0.04]">
+        <div className="flex items-center gap-3">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold">
+            <Zap className="h-4 w-4 fill-current" />
+          </div>
+          <span className="font-mono text-xs tracking-widest font-black uppercase text-slate-200">
+            ⚡ AUTO LAB
+          </span>
+          <span className="hidden sm:inline-block text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            VOICE STUDIO
+          </span>
+        </div>
+
+        {/* Right Category Pill Tab (UX Requirement #2) */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 bg-white/[0.04] border border-white/10 rounded-full p-1 backdrop-blur-md">
+            {[
+              { id: "academy", label: "학원/공부방" },
+              { id: "local_store", label: "로컬 매장" },
+              { id: "ecommerce", label: "스마트스토어" },
+            ].map((cat) => (
+              <button
+                key={cat.id}
+                onClick={() => handleCategoryChange(cat.id)}
+                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+                  category === cat.id
+                    ? "bg-emerald-500 text-slate-950 shadow-md font-bold"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setIsStyleModalOpen(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-obsidian-700 bg-obsidian-900 px-2.5 py-1 text-xs text-slate-300 hover:text-white hover:border-emerald-brand transition"
-            >
-              <Sliders className="h-3.5 w-3.5 text-emerald-brand" />
-              <span>문체 복제</span>
-            </button>
-          </div>
+          <button
+            onClick={() => setIsStyleModalOpen(true)}
+            className="rounded-full p-2 text-slate-400 hover:text-white hover:bg-white/5 transition"
+            title="사장님 문체 복제 설정"
+          >
+            <Sliders className="h-4 w-4" />
+          </button>
         </div>
       </header>
 
-      {/* 2. Central Action Machine (Single-Screen) */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 py-6">
-        <div className="w-full max-w-xl">
-          {/* Settings Pill: 상호명 & 업종 자동 기억 */}
-          <div className="mb-5 flex flex-wrap items-center justify-center gap-2 text-xs">
-            <div className="flex items-center gap-1.5 rounded-xl border border-obsidian-800 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-sm">
-              <Store className="h-3.5 w-3.5 text-emerald-brand" />
+      {/* ───────────────────────────────────────────────────────────────────────── */}
+      {/* Central Core Studio: Single Glass Card (100vh No Scroll) */}
+      {/* ───────────────────────────────────────────────────────────────────────── */}
+      <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-4">
+        <div className="max-w-xl w-full bg-white/[0.03] backdrop-blur-2xl border border-white/10 rounded-3xl p-8 sm:p-10 shadow-2xl relative">
+          
+          {/* Quick Store Name Indicator */}
+          <div className="flex items-center justify-between pb-5 mb-6 border-b border-white/[0.06] text-xs">
+            <div className="flex items-center gap-2 text-slate-400">
+              <Store className="h-3.5 w-3.5 text-emerald-400" />
+              <span>상호명:</span>
               <input
                 type="text"
                 value={businessName}
-                onChange={(e) => handleBusinessNameChange(e.target.value)}
-                placeholder="상호명 입력"
-                className="bg-transparent text-white font-semibold focus:outline-none w-28 placeholder-slate-500"
+                onChange={(e) => handleNameChange(e.target.value)}
+                placeholder="매장 이름"
+                className="bg-transparent text-white font-semibold focus:outline-none w-28 border-b border-transparent focus:border-emerald-400 transition"
               />
             </div>
-
-            <div className="flex items-center rounded-xl border border-obsidian-800 bg-obsidian-900/60 p-1">
-              {[
-                { id: "academy", label: "학원/공부방" },
-                { id: "local_store", label: "식당/카페/샵" },
-                { id: "ecommerce", label: "쇼핑몰" },
-              ].map((cat) => (
-                <button
-                  key={cat.id}
-                  onClick={() => handleCategoryChange(cat.id)}
-                  className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
-                    category === cat.id
-                      ? "bg-emerald-brand text-obsidian-950 shadow-sm"
-                      : "text-slate-400 hover:text-white"
-                  }`}
-                >
-                  {cat.label}
-                </button>
-              ))}
-            </div>
+            <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              0-COST ENGINE READY
+            </span>
           </div>
 
-          {/* ────────────────────────────────────────────────────────────── */}
-          {/* STATE A: IDLE / RECORDING (원클릭 작업기) */}
-          {/* ────────────────────────────────────────────────────────────── */}
-          {stage === "idle" || stage === "recording" ? (
-            <div className="rounded-3xl border border-obsidian-800 bg-obsidian-900/40 p-6 sm:p-8 backdrop-blur-md shadow-2xl text-center">
-              {/* 3줄 프롬프터 가이드 (Checklist #2) */}
-              <div className="mb-8 rounded-2xl border border-emerald-brand/30 bg-emerald-brand/10 p-4 text-center">
-                <div className="text-xs font-extrabold text-emerald-brand mb-1 flex items-center justify-center gap-1.5">
-                  <Sparkles className="h-4 w-4" />
-                  <span>오늘 이거 하나만 편하게 말씀하세요</span>
+          {/* ─────────────────────────────────────────────────────────────────────── */}
+          {/* STATE 1 & 2: IDLE OR RECORDING */}
+          {/* ─────────────────────────────────────────────────────────────────────── */}
+          {studioState === "idle" || studioState === "recording" ? (
+            <div className="flex flex-col items-center text-center">
+              {/* 3줄 프롬프터 가이드 (Checklist #3) */}
+              <div className="w-full mb-8 rounded-2xl border border-white/[0.06] bg-black/30 p-4 text-left">
+                <div className="text-[10px] font-mono uppercase tracking-widest text-emerald-400 font-bold mb-2 flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span>3-LINE PROMPTER GUIDE</span>
                 </div>
-                <p className="text-xs sm:text-sm font-semibold text-white leading-relaxed">
-                  ① 오늘 있었던 일 &nbsp;➔&nbsp; ② 손님/학생의 반응 &nbsp;➔&nbsp; ③ 우리 매장 자랑
-                </p>
+                <div className="space-y-1.5 text-xs text-slate-300 font-mono">
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400 font-bold">01</span>
+                    <span>오늘 매장/수업 중 기억에 남는 일화</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400 font-bold">02</span>
+                    <span>손님·학생이 감동하거나 만족한 포인트</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400 font-bold">03</span>
+                    <span>우리 매장만의 타협 없는 차별화 노하우</span>
+                  </div>
+                </div>
               </div>
 
-              {/* Giant One-Click Action Button */}
-              {!manualTextMode ? (
-                <div className="flex flex-col items-center justify-center py-4">
-                  {stage === "recording" ? (
-                    <div className="relative flex flex-col items-center">
-                      {/* Pulsing ring */}
-                      <div className="absolute h-40 w-40 rounded-full bg-red-500/20 animate-ping" />
+              {!manualMode ? (
+                /* Main Giant Orb Mic Button */
+                <div className="flex flex-col items-center justify-center my-2">
+                  {studioState === "recording" ? (
+                    <div className="flex flex-col items-center">
+                      {/* Live 12-bar Audio Visualizer */}
+                      <div className="h-14 flex items-center justify-center gap-1.5 mb-6">
+                        {audioLevels.map((lvl, idx) => (
+                          <div
+                            key={idx}
+                            style={{ height: `${lvl}px` }}
+                            className="w-1.5 rounded-full bg-gradient-to-t from-emerald-500 to-teal-300 shadow-[0_0_8px_rgba(16,185,129,0.5)] transition-all duration-75"
+                          />
+                        ))}
+                      </div>
+
+                      {/* Glowing Recording Stop Orb */}
                       <button
-                        onClick={stopRecording}
-                        className="relative z-10 flex h-32 w-32 items-center justify-center rounded-full bg-red-500 text-white shadow-2xl shadow-red-500/50 hover:bg-red-600 active:scale-95 transition"
+                        onClick={stopStudioRecording}
+                        className="w-28 h-28 rounded-full bg-red-500 text-white shadow-[0_0_60px_rgba(239,68,68,0.5)] hover:bg-red-600 active:scale-95 transition-all flex items-center justify-center cursor-pointer animate-pulse"
                       >
                         <Square className="h-10 w-10 fill-current" />
                       </button>
-                      <div className="mt-5 text-xl font-black text-red-400 font-mono">
+
+                      <div className="mt-5 text-xl font-mono font-black text-red-400">
                         00:{recordSeconds < 10 ? `0${recordSeconds}` : recordSeconds} / 00:30
                       </div>
-                      <p className="mt-1.5 text-xs text-slate-300 font-medium animate-pulse">
-                        말씀을 마치셨으면 버튼을 한 번 더 터치하세요
+
+                      <p className="mt-1 text-xs text-slate-400">
+                        말씀을 마치셨으면 버튼을 터치하세요
                       </p>
 
-                      {/* Live transcription preview */}
+                      {/* Real-time speech caption */}
                       {liveTranscript && (
-                        <div className="mt-4 max-w-md rounded-xl border border-obsidian-700 bg-obsidian-950 p-3 text-xs text-slate-300 italic">
+                        <div className="mt-4 max-w-sm rounded-xl border border-white/10 bg-black/40 px-3.5 py-2 text-xs text-slate-300 italic truncate">
                           "{liveTranscript}"
                         </div>
                       )}
                     </div>
                   ) : (
+                    /* Idle Glowing Emerald Orb */
                     <div className="flex flex-col items-center">
                       <button
-                        onClick={startRecording}
-                        className="group relative flex h-32 w-32 items-center justify-center rounded-full bg-emerald-brand text-obsidian-950 shadow-2xl shadow-emerald-brand/30 hover:bg-emerald-hover active:scale-95 transition"
+                        onClick={startStudioRecording}
+                        className="w-28 h-28 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-400 text-slate-950 shadow-[0_0_60px_rgba(16,185,129,0.4)] hover:scale-105 active:scale-95 transition-all flex items-center justify-center cursor-pointer group"
                       >
                         <Mic className="h-12 w-12 transition group-hover:scale-110" />
-                        <span className="absolute -top-2 -right-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-brand text-[10px] font-black text-obsidian-950">
-                          1-Click
-                        </span>
                       </button>
-                      <div className="mt-5 text-base sm:text-lg font-extrabold text-white">
-                        [터치하고 30초 말하기]
+
+                      <div className="mt-5 text-base font-bold text-white tracking-tight">
+                        터치하고 30초 말하기
                       </div>
                       <p className="mt-1 text-xs text-slate-400">
-                        녹음이 끝나면 <strong>[생성 ➔ 서식 복사 ➔ 스레드 발행]</strong>이 논스톱 진행됩니다.
+                        종료 즉시 [3대 채널 원고 ➔ 서식 복사 ➔ 스레드] 연쇄 실행
                       </p>
                     </div>
                   )}
 
                   {/* Manual Text Switch */}
-                  <div className="mt-8 pt-4 border-t border-obsidian-800/80 w-full text-center">
+                  <div className="mt-7 pt-4 border-t border-white/[0.06] w-full text-center">
                     <button
-                      onClick={() => setManualTextMode(true)}
-                      className="text-xs text-slate-400 hover:text-emerald-brand transition underline underline-offset-4"
+                      onClick={() => setManualMode(true)}
+                      className="text-[11px] text-slate-500 hover:text-emerald-400 transition underline underline-offset-4 font-mono"
                     >
-                      조용한 곳이거나 텍스트로 적고 싶으신가요?
+                      조용한 곳이거나 텍스트로 바로 적고 싶으신가요?
                     </button>
                   </div>
                 </div>
               ) : (
                 /* Manual Text Fallback Mode */
-                <div className="space-y-4 text-left">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-300">오늘 있었던 이야기 직접 입력:</span>
+                <div className="w-full space-y-4 text-left">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-300">오늘 있었던 일 직접 입력:</span>
                     <button
-                      onClick={() => setManualTextMode(false)}
-                      className="text-xs text-emerald-brand hover:underline"
+                      onClick={() => setManualMode(false)}
+                      className="text-emerald-400 hover:underline font-mono"
                     >
                       🎙️ 음성 모드로 복귀
                     </button>
                   </div>
                   <textarea
-                    value={manualTextInput}
-                    onChange={(e) => setManualTextInput(e.target.value)}
-                    placeholder="예: 오늘 중2 민수가 수학 30점에서 이번 시험 92점 맞았다고 울면서 뛰어왔습니다. 다른 학원에서 공식만 외우다 포기했었는데 저희 학원에서 1:1 역질문으로 오답노트 정리시킨 게 통했습니다."
+                    value={manualText}
+                    onChange={(e) => setManualText(e.target.value)}
+                    placeholder="예: 오늘 중2 서연이가 수학 30점에서 이번 시험 92점 맞았다고 울면서 뛰어왔습니다. 1:1 역질문 오답노트 지도가 통했습니다."
                     rows={4}
-                    className="w-full rounded-2xl border border-obsidian-700 bg-obsidian-950 p-4 text-sm text-white placeholder-slate-500 focus:border-emerald-brand focus:outline-none"
+                    className="w-full rounded-2xl border border-white/10 bg-black/40 p-4 text-xs text-white placeholder-slate-500 focus:border-emerald-400 focus:outline-none"
                   />
                   <button
                     onClick={handleManualSubmit}
-                    className="w-full flex items-center justify-center gap-2 rounded-xl bg-emerald-brand py-3 text-xs font-bold text-obsidian-950 shadow-lg shadow-emerald-brand/20 hover:bg-emerald-hover transition"
+                    className="w-full py-3.5 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 hover:bg-emerald-400 transition flex items-center justify-center gap-2"
                   >
                     <Sparkles className="h-4 w-4" />
-                    <span>원클릭 3대 채널 원고 자동 생성하기</span>
+                    <span>원클릭 3대 채널 원고 자동 생성</span>
                   </button>
                 </div>
               )}
             </div>
           ) : null}
 
-          {/* ────────────────────────────────────────────────────────────── */}
-          {/* STATE B: CHAIN EXECUTING (연쇄 자동화 처리 중 애니메이션) */}
-          {/* ────────────────────────────────────────────────────────────── */}
-          {stage === "transcribing" || stage === "generating" || stage === "publishing" ? (
-            <div className="rounded-3xl border border-emerald-brand/40 bg-obsidian-900/60 p-8 sm:p-10 text-center backdrop-blur-md shadow-2xl animate-fade-in">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-brand/20 text-emerald-brand mb-5 animate-pulse">
-                <RefreshCw className="h-8 w-8 animate-spin" />
+          {/* ─────────────────────────────────────────────────────────────────────── */}
+          {/* STATE 3: LIVE PIPELINE STEPPER ANIMATION */}
+          {/* ─────────────────────────────────────────────────────────────────────── */}
+          {studioState === "chaining" ? (
+            <div className="py-6 flex flex-col items-center text-center animate-fade-in">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 mb-6 animate-pulse">
+                <RefreshCw className="h-7 w-7 animate-spin" />
               </div>
 
-              <h2 className="text-lg font-black text-white mb-1">
-                논스톱 마케팅 자동화 파이프라인 가동 중
+              <h2 className="text-base font-bold text-white mb-1">
+                논스톱 마케팅 자동화 파이프라인
               </h2>
-              <p className="text-xs text-slate-400 mb-6">사장님은 가만히 계세요. AI 코드가 원고 생성부터 발행까지 끝냅니다.</p>
+              <p className="text-xs text-slate-400 mb-8 font-mono">
+                ZERO-CLICK PIPELINE IN PROGRESS...
+              </p>
 
-              {/* High-density Chain Pipeline Steps */}
-              <div className="space-y-3 max-w-sm mx-auto text-left text-xs">
-                <div className={`flex items-center gap-3 p-3 rounded-xl border transition ${
-                  stage === "transcribing"
-                    ? "border-emerald-brand bg-emerald-brand/10 text-emerald-brand font-bold"
-                    : "border-obsidian-800 bg-obsidian-950 text-slate-400"
-                }`}>
-                  <div className={`h-2 w-2 rounded-full ${stage === "transcribing" ? "bg-emerald-brand animate-ping" : "bg-emerald-brand"}`} />
-                  <span>Step A: 음성 텍스트 변환 (STT)</span>
-                  {stage !== "transcribing" && <Check className="h-3.5 w-3.5 text-emerald-brand ml-auto" />}
-                </div>
-
-                <div className={`flex items-center gap-3 p-3 rounded-xl border transition ${
-                  stage === "generating"
-                    ? "border-emerald-brand bg-emerald-brand/10 text-emerald-brand font-bold"
-                    : stage === "publishing"
-                    ? "border-obsidian-800 bg-obsidian-950 text-slate-300"
-                    : "border-obsidian-800 bg-obsidian-950/40 text-slate-500"
-                }`}>
-                  <div className={`h-2 w-2 rounded-full ${stage === "generating" ? "bg-emerald-brand animate-ping" : stage === "publishing" ? "bg-emerald-brand" : "bg-slate-700"}`} />
-                  <span>Step B: 블로그·스레드·인스타 원고 동시 생성</span>
-                  {stage === "publishing" && <Check className="h-3.5 w-3.5 text-emerald-brand ml-auto" />}
-                </div>
-
-                <div className={`flex items-center gap-3 p-3 rounded-xl border transition ${
-                  stage === "publishing"
-                    ? "border-emerald-brand bg-emerald-brand/10 text-emerald-brand font-bold"
-                    : "border-obsidian-800 bg-obsidian-950/40 text-slate-500"
-                }`}>
-                  <div className={`h-2 w-2 rounded-full ${stage === "publishing" ? "bg-emerald-brand animate-ping" : "bg-slate-700"}`} />
-                  <span>Step C: 서식 자동 복사 & 스레드 발행 준비</span>
-                </div>
+              {/* Sequential 4-Step Animated Stepper (Requirement #4) */}
+              <div className="w-full max-w-sm space-y-3 text-left text-xs font-mono">
+                {[
+                  { step: 1, text: "음성 인식 및 키워드 추출 (STT)" },
+                  { step: 2, text: "사장님 문체 복제 & 3대 원고 생성" },
+                  { step: 3, text: "네이버 블로그 서식 자동 복사됨" },
+                  { step: 4, text: "스레드(Threads) 자동 발행 준비" },
+                ].map((item) => {
+                  const isDone = chainStep >= item.step;
+                  const isCurrent = chainStep === item.step;
+                  return (
+                    <div
+                      key={item.step}
+                      className={`flex items-center gap-3 p-3.5 rounded-xl border transition-all duration-300 ${
+                        isDone
+                          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 font-bold shadow-md shadow-emerald-500/5"
+                          : "border-white/[0.04] bg-black/20 text-slate-600"
+                      }`}
+                    >
+                      <div
+                        className={`h-2 w-2 rounded-full transition-all ${
+                          isCurrent
+                            ? "bg-emerald-400 animate-ping"
+                            : isDone
+                            ? "bg-emerald-400"
+                            : "bg-slate-700"
+                        }`}
+                      />
+                      <span>[✓ {item.text}]</span>
+                      {isDone && <Check className="h-4 w-4 text-emerald-400 ml-auto shrink-0" />}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : null}
 
-          {/* ────────────────────────────────────────────────────────────── */}
-          {/* STATE C: RECEIPT VIEW (영수증 UI - 완료 화면) */}
-          {/* ────────────────────────────────────────────────────────────── */}
-          {stage === "done" && generatedData ? (
-            <div className="rounded-3xl border border-emerald-brand/40 bg-obsidian-900 p-6 sm:p-8 shadow-2xl backdrop-blur-md animate-fade-in">
+          {/* ─────────────────────────────────────────────────────────────────────── */}
+          {/* STATE 4: RECEIPT VIEW (완료 영수증 UI) */}
+          {/* ─────────────────────────────────────────────────────────────────────── */}
+          {studioState === "done" && generatedData ? (
+            <div className="flex flex-col animate-fade-in">
               {/* Receipt Header */}
-              <div className="flex items-center justify-between border-b border-obsidian-800 pb-4 mb-5">
+              <div className="flex items-center justify-between border-b border-white/[0.08] pb-4 mb-5">
                 <div>
                   <div className="flex items-center gap-2">
-                    <CheckCircle2 className="h-5 w-5 text-emerald-brand" />
-                    <span className="font-extrabold text-white text-base">마케팅 자동화 완료 영수증</span>
+                    <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+                    <span className="font-extrabold text-white text-base">
+                      발행 완료 영수증
+                    </span>
                   </div>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    {businessName} · 처리 완료 ({executionTimeMs}초 소요)
+                  <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+                    {businessName} · 소요 시간: {executionTime}초 (원가 0원)
                   </p>
                 </div>
-                <span className="rounded-full bg-emerald-brand/10 border border-emerald-brand/30 px-2.5 py-1 text-[10px] font-bold text-emerald-brand">
-                  100% 자동 완료
+                <span className="rounded-full bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 text-[10px] font-mono font-bold text-emerald-400">
+                  ALL-CHAIN COMPLETE
                 </span>
               </div>
 
-              {/* Two Lines Status Message (UX Requirement #4) */}
-              <div className="space-y-2.5 rounded-2xl border border-obsidian-800 bg-obsidian-950 p-4 mb-6 text-xs sm:text-sm font-semibold">
-                <div className="flex items-center gap-2 text-emerald-brand">
+              {/* Two Lines Status Message (Requirement #4) */}
+              <div className="space-y-2 rounded-2xl border border-white/[0.06] bg-black/40 p-4 mb-6 text-xs font-semibold">
+                <div className="flex items-center gap-2 text-emerald-400">
                   <Check className="h-4 w-4 shrink-0 font-bold" />
                   <span>✅ 스레드(Threads) 자동 발행 준비 완료!</span>
                 </div>
                 <div className="flex items-center gap-2 text-white">
-                  <Check className="h-4 w-4 shrink-0 font-bold text-emerald-brand" />
+                  <Check className="h-4 w-4 shrink-0 font-bold text-emerald-400" />
                   <span>✅ 네이버 블로그 원고 자동 복사 완료! (블로그에 붙여넣기만 하세요)</span>
                 </div>
               </div>
 
-              {/* The Single Primary Button: 바로 네이버 블로그 글쓰기 창 이동 (Checklist #4) */}
-              <div className="space-y-3 mb-6">
+              {/* The Single Primary Button: 바로 네이버 블로그 글쓰기 창 이동 (Requirement #4) */}
+              <div className="space-y-3 mb-5">
                 <a
                   href="https://blog.naver.com"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-brand py-4 px-6 text-sm sm:text-base font-extrabold text-obsidian-950 shadow-xl shadow-emerald-brand/30 hover:bg-emerald-hover active:scale-95 transition"
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 py-4 px-6 text-sm font-extrabold text-slate-950 shadow-xl shadow-emerald-500/30 hover:opacity-95 active:scale-95 transition"
                 >
                   <FileText className="h-5 w-5" />
-                  <span>네이버 블로그 글쓰기창으로 바로 이동 (붙여넣기)</span>
-                  <ExternalLink className="h-4 w-4" />
+                  <span>네이버 블로그 글쓰기로 바로 이동 (Ctrl+V)</span>
+                  <ExternalLink className="h-4 w-4 opacity-70" />
                 </a>
 
-                {/* Instant Threads View Button */}
+                {/* Secondary: Instant Threads view */}
                 <button
                   onClick={() => {
                     const encoded = encodeURIComponent(generatedData.threads_text);
                     window.open(`https://www.threads.net/intent/post?text=${encoded}`, "_blank");
                   }}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-obsidian-700 bg-obsidian-950 py-3 text-xs font-bold text-slate-200 hover:text-white hover:bg-obsidian-800 transition"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] py-2.5 text-xs font-bold text-slate-200 hover:text-white hover:bg-white/[0.06] transition"
                 >
                   <Share2 className="h-4 w-4" />
-                  <span>스레드 발행창 열기 (클릭 1번에 업로드)</span>
+                  <span>스레드 발행창 열기 (새 창)</span>
                   <ExternalLink className="h-3.5 w-3.5 opacity-60" />
                 </button>
               </div>
 
-              {/* Expandable Preview Toggle (검토용) */}
-              <div className="border-t border-obsidian-800 pt-4">
+              {/* Expandable Preview Drawer */}
+              <div className="border-t border-white/[0.06] pt-3">
                 <button
                   onClick={() => setShowPreview(!showPreview)}
                   className="flex w-full items-center justify-between text-xs text-slate-400 hover:text-white transition py-1"
                 >
-                  <span className="font-semibold">생성된 원고 3종 미리보기 (검토)</span>
-                  {showPreview ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  <span className="font-mono text-[11px]">생성된 원고 3종 미리보기 (검토)</span>
+                  {showPreview ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                 </button>
 
                 {showPreview && (
-                  <div className="mt-4 space-y-4">
-                    {/* Tabs */}
-                    <div className="flex gap-1.5 rounded-xl bg-obsidian-950 p-1">
-                      <button
-                        onClick={() => setPreviewTab("blog")}
-                        className={`flex-1 rounded-lg py-1.5 text-xs font-bold transition ${
-                          previewTab === "blog" ? "bg-emerald-brand text-obsidian-950" : "text-slate-400"
-                        }`}
-                      >
-                        블로그
-                      </button>
-                      <button
-                        onClick={() => setPreviewTab("threads")}
-                        className={`flex-1 rounded-lg py-1.5 text-xs font-bold transition ${
-                          previewTab === "threads" ? "bg-white text-obsidian-950" : "text-slate-400"
-                        }`}
-                      >
-                        스레드
-                      </button>
-                      <button
-                        onClick={() => setPreviewTab("insta")}
-                        className={`flex-1 rounded-lg py-1.5 text-xs font-bold transition ${
-                          previewTab === "insta" ? "bg-pink-500 text-white" : "text-slate-400"
-                        }`}
-                      >
-                        인스타
-                      </button>
+                  <div className="mt-3 space-y-3">
+                    <div className="flex gap-1 bg-black/40 p-1 rounded-xl border border-white/10">
+                      {(["blog", "threads", "insta"] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          onClick={() => setPreviewTab(tab)}
+                          className={`flex-1 py-1 rounded-lg text-xs font-bold transition ${
+                            previewTab === tab
+                              ? "bg-emerald-500 text-slate-950"
+                              : "text-slate-400 hover:text-white"
+                          }`}
+                        >
+                          {tab === "blog" ? "블로그" : tab === "threads" ? "스레드" : "인스타"}
+                        </button>
+                      ))}
                     </div>
 
-                    {/* Blog Preview */}
                     {previewTab === "blog" && (
-                      <div className="rounded-xl border border-slate-200 bg-white p-5 text-slate-800 text-xs shadow-inner">
-                        <div className="font-bold text-sm mb-3 pb-2 border-b text-slate-900">
+                      <div className="rounded-xl border border-slate-200 bg-white p-4 text-slate-800 text-xs max-h-48 overflow-y-auto">
+                        <div className="font-bold text-xs mb-2 pb-1 border-b text-slate-900">
                           {generatedData.naver_blog_title}
                         </div>
                         <div dangerouslySetInnerHTML={{ __html: generatedData.naver_blog_html }} />
                       </div>
                     )}
 
-                    {/* Threads Preview */}
                     {previewTab === "threads" && (
-                      <div className="rounded-xl border border-obsidian-700 bg-obsidian-950 p-4 font-mono text-xs text-slate-200 whitespace-pre-wrap">
+                      <div className="rounded-xl border border-white/10 bg-black/50 p-3 font-mono text-xs text-slate-200 whitespace-pre-wrap max-h-48 overflow-y-auto">
                         {generatedData.threads_text}
                       </div>
                     )}
 
-                    {/* Insta Preview */}
                     {previewTab === "insta" && (
-                      <div className="rounded-xl border border-obsidian-700 bg-obsidian-950 p-4 text-xs text-slate-200 whitespace-pre-wrap">
+                      <div className="rounded-xl border border-white/10 bg-black/50 p-3 text-xs text-slate-200 whitespace-pre-wrap max-h-48 overflow-y-auto">
                         {generatedData.insta_caption}
                       </div>
                     )}
@@ -637,14 +734,14 @@ export default function OneClickDashboard() {
                 )}
               </div>
 
-              {/* Reset to Start New */}
-              <div className="mt-6 pt-4 border-t border-obsidian-800 text-center">
+              {/* Reset Action */}
+              <div className="mt-5 pt-3 border-t border-white/[0.06] text-center">
                 <button
-                  onClick={resetAll}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-400 hover:text-emerald-brand transition"
+                  onClick={resetStudio}
+                  className="inline-flex items-center gap-1.5 text-xs font-mono text-slate-400 hover:text-emerald-400 transition"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                  <span>새로운 30초 마케팅 시작하기</span>
+                  <span>새로운 30초 구술 시작하기</span>
                 </button>
               </div>
             </div>
@@ -652,9 +749,11 @@ export default function OneClickDashboard() {
         </div>
       </main>
 
-      {/* 3. Ultra-Clean Minimal Footer */}
-      <footer className="border-t border-obsidian-900 py-4 text-center text-[11px] text-slate-600">
-        © 2026 사장님 자동화 연구소 · 원가 0원 고성능 라우터 직결
+      {/* ───────────────────────────────────────────────────────────────────────── */}
+      {/* Bottom Footer: Ultra-Clean Monospace Line */}
+      {/* ───────────────────────────────────────────────────────────────────────── */}
+      <footer className="relative z-20 px-6 py-3 border-t border-white/[0.04] text-center text-[11px] font-mono text-slate-600">
+        © 2026 AUTO LAB · ZERO-CLICK RUNTIME · 100% PURE VOICE FLOW
       </footer>
 
       {/* Style Cloning Modal */}
@@ -662,7 +761,12 @@ export default function OneClickDashboard() {
         isOpen={isStyleModalOpen}
         onClose={() => setIsStyleModalOpen(false)}
         currentStyle={styleGuide}
-        onSaveStyle={handleSaveStyle}
+        onSaveStyle={(st) => {
+          setStyleGuide(st);
+          if (typeof window !== "undefined") {
+            localStorage.setItem("ceo_autolab_style", JSON.stringify(st));
+          }
+        }}
       />
     </div>
   );
