@@ -134,36 +134,49 @@ ${JSON.stringify(
       }
     }
 
-    // 2. Cloud Fallback to Gemini Flash Latest (0-cost tier)
+    // 2. Cloud Fallback to Gemini with Multi-Model Redundancy (0-cost tier)
     if (!rawContent && process.env.GEMINI_API_KEY) {
-      try {
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-              contents: [{ parts: [{ text: userPrompt }] }],
-              generationConfig: {
-                temperature: 0.6,
-                responseMimeType: "application/json",
-              },
-            }),
-            signal: AbortSignal.timeout(20000),
-          }
-        );
+      const cloudModels = [
+        "gemini-flash-latest",
+        "gemini-3.5-flash",
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+      ];
 
-        if (geminiRes.ok) {
-          const geminiData = await geminiRes.json();
-          rawContent = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
-          modelUsed = "gemini-flash-latest (Cloud Free Tier)";
-        } else {
-          const errBody = await geminiRes.text();
-          console.error("Gemini API error response:", geminiRes.status, errBody);
+      for (const m of cloudModels) {
+        try {
+          const geminiRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                contents: [{ parts: [{ text: userPrompt }] }],
+                generationConfig: {
+                  temperature: 0.6,
+                  responseMimeType: "application/json",
+                },
+              }),
+              signal: AbortSignal.timeout(20000),
+            }
+          );
+
+          if (geminiRes.ok) {
+            const geminiData = await geminiRes.json();
+            rawContent = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            if (rawContent) {
+              modelUsed = `${m} (Cloud Free Tier)`;
+              break;
+            }
+          } else {
+            const errBody = await geminiRes.text();
+            console.warn(`Gemini [${m}] returned ${geminiRes.status}:`, errBody.slice(0, 120));
+          }
+        } catch (geminiErr: any) {
+          console.warn(`Gemini [${m}] failed:`, geminiErr?.message || geminiErr);
         }
-      } catch (geminiErr: any) {
-        console.error("Gemini Fallback failed:", geminiErr?.message || geminiErr);
       }
     }
 

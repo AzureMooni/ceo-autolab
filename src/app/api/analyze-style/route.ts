@@ -71,32 +71,43 @@ ${sampleText}
       }
     }
 
-    // 2. Production Fallback to Gemini API
+    // 2. Production Fallback to Gemini API with Multi-Model Redundancy
     if (!content && process.env.GEMINI_API_KEY) {
-      try {
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: "당신은 문체 복제 전문 카피라이터입니다. 반드시 지정된 JSON 포맷으로만 응답하세요." }] },
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: {
-                temperature: 0.3,
-                responseMimeType: "application/json",
-              },
-            }),
-            signal: AbortSignal.timeout(20000),
-          }
-        );
+      const cloudModels = [
+        "gemini-flash-latest",
+        "gemini-3.5-flash",
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+      ];
 
-        if (geminiRes.ok) {
-          const geminiData = await geminiRes.json();
-          content = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      for (const m of cloudModels) {
+        try {
+          const geminiRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: "당신은 문체 복제 전문 카피라이터입니다. 반드시 지정된 JSON 포맷으로만 응답하세요." }] },
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                  temperature: 0.3,
+                  responseMimeType: "application/json",
+                },
+              }),
+              signal: AbortSignal.timeout(20000),
+            }
+          );
+
+          if (geminiRes.ok) {
+            const geminiData = await geminiRes.json();
+            content = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            if (content) break;
+          }
+        } catch (geminiErr) {
+          console.warn(`Gemini [${m}] fallback failed for analyze-style:`, geminiErr);
         }
-      } catch (geminiErr) {
-        console.error("Gemini Fallback failed for analyze-style:", geminiErr);
       }
     }
 

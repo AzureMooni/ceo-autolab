@@ -44,47 +44,61 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2. Try Gemini Flash Audio Transcription (Cloud-Native & Free)
+    // 2. Try Gemini Audio Transcription with Multi-Model Redundancy (Cloud-Native & Free)
     if (process.env.GEMINI_API_KEY) {
       try {
         const buffer = Buffer.from(await file.arrayBuffer());
         const base64Audio = buffer.toString("base64");
         const mimeType = file.type || "audio/webm";
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
+        const cloudModels = [
+          "gemini-flash-latest",
+          "gemini-3.5-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3.8-flash",
+        ];
+
+        for (const m of cloudModels) {
+          try {
+            const geminiRes = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [
                     {
-                      inlineData: {
-                        mimeType,
-                        data: base64Audio,
-                      },
-                    },
-                    {
-                      text: "다음 음성을 듣고 한국어로 정확하게 받아써주세요. 어떠한 부가 설명이나 인사말 없이 오직 들린 음성 내용 텍스트만 출력하세요.",
+                      parts: [
+                        {
+                          inlineData: {
+                            mimeType,
+                            data: base64Audio,
+                          },
+                        },
+                        {
+                          text: "다음 음성을 듣고 한국어로 정확하게 받아써주세요. 어떠한 부가 설명이나 인사말 없이 오직 들린 음성 내용 텍스트만 출력하세요.",
+                        },
+                      ],
                     },
                   ],
-                },
-              ],
-            }),
-          }
-        );
+                }),
+                signal: AbortSignal.timeout(20000),
+              }
+            );
 
-        if (geminiRes.ok) {
-          const geminiData = await geminiRes.json();
-          const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-          if (text) {
-            return NextResponse.json({ text, provider: "gemini-flash-cloud" });
+            if (geminiRes.ok) {
+              const geminiData = await geminiRes.json();
+              const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+              if (text) {
+                return NextResponse.json({ text, provider: `${m}-cloud` });
+              }
+            }
+          } catch (mErr) {
+            console.warn(`Gemini [${m}] STT failed, trying next:`, mErr);
           }
         }
       } catch (geminiErr) {
-        console.warn("Gemini Flash STT failed, trying next fallback:", geminiErr);
+        console.warn("Gemini STT failed, trying next fallback:", geminiErr);
       }
     }
 
