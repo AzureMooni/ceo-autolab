@@ -1,0 +1,5 @@
+.next
+.vercel
+node_modules
+.git
+.DS_Store
