@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -16,26 +18,30 @@ export async function POST(req: NextRequest) {
     const freellmKey = process.env.FREELLMAPI_API_KEY || "";
     const openAiKey = process.env.OPENAI_API_KEY || "";
 
-    // 1. Try FreeLLMAPI audio transcriptions
-    try {
-      const sttFormData = new FormData();
-      sttFormData.append("file", file, "recording.webm");
-      sttFormData.append("model", "whisper-1");
+    // 1. Try local FreeLLMAPI first (only if running locally or remote URL specified)
+    const isLocalServer = freellmUrl.includes("localhost") || freellmUrl.includes("127.0.0.1");
+    if (!process.env.VERCEL || !isLocalServer) {
+      try {
+        const sttFormData = new FormData();
+        sttFormData.append("file", file, "recording.webm");
+        sttFormData.append("model", "whisper-1");
 
-      const response = await fetch(`${freellmUrl}/audio/transcriptions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${freellmKey}`,
-        },
-        body: sttFormData,
-      });
+        const response = await fetch(`${freellmUrl}/audio/transcriptions`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${freellmKey}`,
+          },
+          body: sttFormData,
+          signal: AbortSignal.timeout(5000),
+        });
 
-      if (response.ok) {
-        const data = await response.json();
-        return NextResponse.json({ text: data.text || "" });
+        if (response.ok) {
+          const data = await response.json();
+          return NextResponse.json({ text: data.text || "" });
+        }
+      } catch (freellmErr) {
+        console.warn("FreeLLMAPI STT failed, proceeding to Gemini fallback...", freellmErr);
       }
-    } catch (freellmErr) {
-      console.warn("FreeLLMAPI STT failed, trying OpenAI fallback:", freellmErr);
     }
 
     // 2. Try Gemini Flash Audio Transcription (Cloud-Native & Free)

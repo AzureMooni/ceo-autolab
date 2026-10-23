@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const { sampleText } = await req.json();
@@ -36,32 +38,37 @@ ${sampleText}
     let content = "";
 
     // 1. Try local FreeLLMAPI first
-    try {
-      const response = await fetch(`${freellmUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${freellmKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: "system",
-              content: "당신은 문체 복제(Style Cloning) 전문 언어학자이자 카피라이터입니다. 반드시 지정된 JSON 포맷으로만 응답하세요.",
-            },
-            { role: "user", content: prompt },
-          ],
-          temperature: 0.3,
-        }),
-      });
+    // 1. Local FreeLLMAPI (only if not on Vercel or remote host configured)
+    const isLocalServer = freellmUrl.includes("localhost") || freellmUrl.includes("127.0.0.1");
+    if (!process.env.VERCEL || !isLocalServer) {
+      try {
+        const response = await fetch(`${freellmUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${freellmKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: "system",
+                content: "당신은 문체 복제(Style Cloning) 전문 언어학자이자 카피라이터입니다. 반드시 지정된 JSON 포맷으로만 응답하세요.",
+              },
+              { role: "user", content: prompt },
+            ],
+            temperature: 0.3,
+          }),
+          signal: AbortSignal.timeout(3000),
+        });
 
-      if (response.ok) {
-        const data = await response.json();
-        content = data.choices?.[0]?.message?.content || "";
+        if (response.ok) {
+          const data = await response.json();
+          content = data.choices?.[0]?.message?.content || "";
+        }
+      } catch (e) {
+        console.warn("FreeLLMAPI unavailable for analyze-style, attempting fallback...");
       }
-    } catch (e) {
-      console.warn("Local FreeLLMAPI unavailable for analyze-style, attempting fallback...");
     }
 
     // 2. Production Fallback to Gemini API
@@ -80,6 +87,7 @@ ${sampleText}
                 responseMimeType: "application/json",
               },
             }),
+            signal: AbortSignal.timeout(20000),
           }
         );
 

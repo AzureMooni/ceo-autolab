@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 const SYSTEM_PROMPT = `
 당신은 대한민국 상위 0.1% 로컬 비즈니스 마케터이자 사장님 문체 복제(Style Cloning) 전문가입니다.
 사장님이 바쁜 일과 중 30초 동안 음성으로 말씀하신 날것의 구술 내용을 바탕으로, 고객이 읽자마자 문의하고 싶어지는 설득력 있는 3대 채널 원고를 작성합니다.
@@ -100,35 +102,39 @@ ${JSON.stringify(
     let rawContent = "";
     let modelUsed = model;
 
-    // 1. Try local FreeLLMAPI first
-    try {
-      const response = await fetch(`${freellmUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${freellmKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userPrompt },
-          ],
-          temperature: 0.6,
-          response_format: { type: "json_object" },
-        }),
-      });
+    // 1. Try local FreeLLMAPI first (only when running locally or explicit remote URL provided)
+    const isLocalServer = freellmUrl.includes("localhost") || freellmUrl.includes("127.0.0.1");
+    if (!process.env.VERCEL || !isLocalServer) {
+      try {
+        const response = await fetch(`${freellmUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${freellmKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: userPrompt },
+            ],
+            temperature: 0.6,
+            response_format: { type: "json_object" },
+          }),
+          signal: AbortSignal.timeout(3000),
+        });
 
-      if (response.ok) {
-        const data = await response.json();
-        rawContent = data.choices?.[0]?.message?.content || "";
-        modelUsed = data.model || model;
+        if (response.ok) {
+          const data = await response.json();
+          rawContent = data.choices?.[0]?.message?.content || "";
+          modelUsed = data.model || model;
+        }
+      } catch (localErr) {
+        console.warn("FreeLLMAPI unreachable, proceeding to Gemini cloud fallback...");
       }
-    } catch (localErr) {
-      console.warn("Local FreeLLMAPI unreachable, attempting Gemini fallback...");
     }
 
-    // 2. Production Fallback to Gemini Flash Latest (0-cost tier)
+    // 2. Cloud Fallback to Gemini Flash Latest (0-cost tier)
     if (!rawContent && process.env.GEMINI_API_KEY) {
       try {
         const geminiRes = await fetch(
@@ -144,6 +150,7 @@ ${JSON.stringify(
                 responseMimeType: "application/json",
               },
             }),
+            signal: AbortSignal.timeout(20000),
           }
         );
 
@@ -151,9 +158,12 @@ ${JSON.stringify(
           const geminiData = await geminiRes.json();
           rawContent = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
           modelUsed = "gemini-flash-latest (Cloud Free Tier)";
+        } else {
+          const errBody = await geminiRes.text();
+          console.error("Gemini API error response:", geminiRes.status, errBody);
         }
-      } catch (geminiErr) {
-        console.error("Gemini Fallback failed:", geminiErr);
+      } catch (geminiErr: any) {
+        console.error("Gemini Fallback failed:", geminiErr?.message || geminiErr);
       }
     }
 
