@@ -1,0 +1,80 @@
+import { NextRequest, NextResponse } from "next/server";
+
+export async function POST(req: NextRequest) {
+  try {
+    const formData = await req.formData();
+    const file = formData.get("file") as Blob | null;
+
+    if (!file) {
+      return NextResponse.json(
+        { error: "음성 파일이 누락되었습니다." },
+        { status: 400 }
+      );
+    }
+
+    const freellmUrl = process.env.FREELLMAPI_BASE_URL || "http://localhost:3001/v1";
+    const freellmKey = process.env.FREELLMAPI_API_KEY || "";
+    const openAiKey = process.env.OPENAI_API_KEY || "";
+
+    // 1. Try FreeLLMAPI audio transcriptions
+    try {
+      const sttFormData = new FormData();
+      sttFormData.append("file", file, "recording.webm");
+      sttFormData.append("model", "whisper-1");
+
+      const response = await fetch(`${freellmUrl}/audio/transcriptions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${freellmKey}`,
+        },
+        body: sttFormData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        return NextResponse.json({ text: data.text || "" });
+      }
+    } catch (freellmErr) {
+      console.warn("FreeLLMAPI STT failed, trying OpenAI fallback:", freellmErr);
+    }
+
+    // 2. Try OpenAI Whisper fallback if API key is provided
+    if (openAiKey) {
+      try {
+        const sttFormData = new FormData();
+        sttFormData.append("file", file, "recording.webm");
+        sttFormData.append("model", "whisper-1");
+        sttFormData.append("language", "ko");
+
+        const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${openAiKey}`,
+          },
+          body: sttFormData,
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          return NextResponse.json({ text: data.text || "" });
+        }
+      } catch (openAiErr) {
+        console.error("OpenAI Whisper STT failed:", openAiErr);
+      }
+    }
+
+    // If both upstream STT are unavailable, inform client
+    return NextResponse.json(
+      {
+        error: "음성 변환(STT) 서버 연결에 실패했습니다. 직접 텍스트로 입력하시거나 잠시 후 다시 시도해주세요.",
+      },
+      { status: 503 }
+    );
+  } catch (error: any) {
+    console.error("STT Route Error:", error);
+    return NextResponse.json(
+      { error: error?.message || "음성 변환 처리 중 오류가 발생했습니다." },
+      { status: 500 }
+    );
+  }
+}
