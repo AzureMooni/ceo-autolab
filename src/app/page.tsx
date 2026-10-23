@@ -19,6 +19,8 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
+  X,
+  Play,
 } from "lucide-react";
 import StyleCloningModal from "@/components/StyleCloningModal";
 import { copyHtmlToClipboard, copyPlainText } from "@/utils/copyRichText";
@@ -31,6 +33,21 @@ interface GeneratedData {
 }
 
 type StudioState = "idle" | "recording" | "chaining" | "done";
+
+const DEMO_SAMPLES: Record<string, { label: string; text: string }> = {
+  academy: {
+    label: "🎯 학원 샘플",
+    text: "오늘 중2 서연이가 지난 시험 30점에서 이번 기말고사 92점 맞았다고 울면서 뛰어왔습니다. 포기하지 않고 1:1 역질문 오답노트로 끝까지 함께한 보람을 느꼈습니다.",
+  },
+  local_store: {
+    label: "🥩 매장 샘플",
+    text: "오늘 점심에 단체 손님께서 '여기 고기는 잡내가 하나도 없고 밑반찬까지 정갈하다'며 온 가족 모임 20인분을 즉석에서 예약하고 가셨습니다. 매일 아침 새벽시장에서 들여오는 신선육과 3일 저온 숙성의 차이를 알아주셔서 보람찼습니다.",
+  },
+  ecommerce: {
+    label: "📦 스토어 샘플",
+    text: "어제 런칭한 수제 천연가죽 지갑이 출시 하루 만에 1차 준비 수량 300개가 전량 품절되었습니다. 박음질 하나하나 꼼꼼히 검수한 진심을 알아봐 주셔서 진심으로 감사드립니다.",
+  },
+};
 
 export default function DarkStudioPage() {
   // Persistence & Settings
@@ -143,18 +160,45 @@ export default function DarkStudioPage() {
     setRecordSeconds(0);
 
     try {
-      // First line directly calls getUserMedia for instant browser permission popup
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("UNSUPPORTED_MEDIA");
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      // Check whether an audioinput device exists on this machine
+      if (navigator.mediaDevices.enumerateDevices) {
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const hasAudioInput = devices.some((d) => d.kind === "audioinput");
+          if (!hasAudioInput && devices.length > 0) {
+            const noMicErr = new Error("Requested device not found");
+            noMicErr.name = "NotFoundError";
+            throw noMicErr;
+          }
+        } catch (checkErr: any) {
+          if (checkErr.name === "NotFoundError") throw checkErr;
+        }
+      }
+
+      // First try noise-canceling constraints, fallback to { audio: true } if overconstrained
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch (advancedErr: any) {
+        if (
+          advancedErr.name === "OverconstrainedError" ||
+          advancedErr.name === "ConstraintNotSatisfiedError"
+        ) {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } else {
+          throw advancedErr;
+        }
+      }
 
       mediaStreamRef.current = stream;
 
@@ -238,25 +282,38 @@ export default function DarkStudioPage() {
         });
       }, 1000);
     } catch (err: any) {
-      console.error("Mic Permission / Audio Error:", err);
+      console.warn("Mic Permission / Audio Error:", err);
       stopAudioStreams();
 
-      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        setPermissionError(
+          "🎙️ 마이크 장치를 찾을 수 없습니다. (Mac mini는 내장 마이크가 없어 에어팟/블루투스/USB 마이크 연결이 필요합니다. 아래 '1초 데모' 버튼으로 바로 체험해 보세요!)"
+        );
+      } else if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
         setPermissionError(
           "⚠️ 브라우저 주소창 왼쪽 [사이트 설정 / 자물쇠 아이콘]에서 마이크 권한을 '허용'으로 변경해주세요."
         );
       } else if (err.message === "UNSUPPORTED_MEDIA") {
         setPermissionError(
-          "⚠️ 마이크 장치를 찾을 수 없거나 현재 환경(HTTPS / localhost)에서만 지원됩니다."
+          "⚠️ 마이크 장치를 지원하지 않거나 HTTPS / localhost 환경이 아닙니다."
         );
       } else {
         setPermissionError(
-          "⚠️ 마이크 연결에 실패했습니다. 아래 텍스트 직접 입력 모드를 사용해 보세요."
+          `⚠️ 마이크 연결 실패 (${err.name || "오류"}): 아래 1초 데모 버튼 또는 직접 입력으로 바로 생성 가능합니다.`
         );
       }
       setManualMode(true);
       setStudioState("idle");
     }
+  };
+
+  const handleDemoExecution = (customText?: string) => {
+    const text =
+      customText ||
+      DEMO_SAMPLES[category]?.text ||
+      DEMO_SAMPLES.academy.text;
+    setPermissionError(null);
+    executeOneClickChain(undefined, text);
   };
 
   const stopStudioRecording = () => {
@@ -362,9 +419,27 @@ export default function DarkStudioPage() {
 
       {/* Permission Warning Banner (Glassmorphism Alert) */}
       {permissionError && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-lg rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5 backdrop-blur-xl text-amber-300 text-xs flex items-center gap-2.5 shadow-2xl animate-fade-in">
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-          <span className="leading-relaxed">{permissionError}</span>
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-2xl rounded-2xl border border-amber-500/30 bg-black/85 p-3.5 sm:p-4 backdrop-blur-2xl text-amber-300 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xl animate-fade-in">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5 sm:mt-0" />
+            <span className="leading-relaxed font-sans">{permissionError}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            <button
+              onClick={() => handleDemoExecution()}
+              className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-black text-[11px] shadow-lg shadow-emerald-500/20 hover:brightness-110 active:scale-95 transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <Sparkles className="h-3.5 w-3.5 fill-current" />
+              <span>1초 데모 즉시 실행</span>
+            </button>
+            <button
+              onClick={() => setPermissionError(null)}
+              className="p-1 rounded-lg hover:bg-white/10 text-amber-300/70 hover:text-amber-300 transition"
+              title="닫기"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -523,6 +598,16 @@ export default function DarkStudioPage() {
                       <p className="mt-1 text-xs text-slate-400">
                         종료 즉시 [3대 채널 원고 ➔ 서식 복사 ➔ 스레드] 연쇄 실행
                       </p>
+
+                      {/* 1초 데모 즉시 체험 버튼 */}
+                      <button
+                        type="button"
+                        onClick={() => handleDemoExecution()}
+                        className="mt-4 flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] font-mono hover:bg-emerald-500/20 active:scale-95 transition shadow-sm"
+                      >
+                        <Sparkles className="h-3 w-3 fill-current text-emerald-400" />
+                        <span>⚡ 마이크 없이 1초 데모로 원클릭 체험</span>
+                      </button>
                     </div>
                   )}
 
@@ -538,29 +623,59 @@ export default function DarkStudioPage() {
                 </div>
               ) : (
                 /* Manual Text Fallback Mode */
-                <div className="w-full space-y-4 text-left">
+                <div className="w-full space-y-3.5 text-left">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-slate-300">오늘 있었던 일 직접 입력:</span>
+                    <span className="font-bold text-slate-300">오늘 있었던 일 입력:</span>
                     <button
                       onClick={() => setManualMode(false)}
-                      className="text-emerald-400 hover:underline font-mono"
+                      className="text-emerald-400 hover:underline font-mono text-[11px]"
                     >
                       🎙️ 음성 모드로 복귀
                     </button>
                   </div>
+
+                  {/* Quick Preset Samples */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] text-slate-500 font-mono">빠른 예시:</span>
+                    {Object.entries(DEMO_SAMPLES).map(([key, item]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setManualText(item.text)}
+                        className={`text-[10px] px-2.5 py-1 rounded-lg border font-mono transition ${
+                          category === key
+                            ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300"
+                            : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => handleDemoExecution()}
+                      className="text-[10px] px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold font-mono transition hover:bg-emerald-500/30 ml-auto flex items-center gap-1"
+                    >
+                      <Sparkles className="h-3 w-3 fill-current" />
+                      <span>1초 데모 즉시 실행</span>
+                    </button>
+                  </div>
+
                   <textarea
                     value={manualText}
                     onChange={(e) => setManualText(e.target.value)}
                     placeholder="예: 오늘 중2 서연이가 수학 30점에서 이번 시험 92점 맞았다고 울면서 뛰어왔습니다. 1:1 역질문 오답노트 지도가 통했습니다."
                     rows={4}
-                    className="w-full rounded-2xl border border-white/10 bg-black/40 p-4 text-xs text-white placeholder-slate-500 focus:border-emerald-400 focus:outline-none"
+                    className="w-full rounded-2xl border border-white/10 bg-black/40 p-4 text-xs text-white placeholder-slate-500 focus:border-emerald-400 focus:outline-none transition leading-relaxed"
                   />
+
                   <button
                     onClick={handleManualSubmit}
-                    className="w-full py-3.5 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 hover:bg-emerald-400 transition flex items-center justify-center gap-2"
+                    disabled={!manualText.trim()}
+                    className="w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 hover:opacity-95 disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-2 cursor-pointer"
                   >
-                    <Sparkles className="h-4 w-4" />
-                    <span>원클릭 3대 채널 원고 자동 생성</span>
+                    <Sparkles className="h-4 w-4 fill-current" />
+                    <span>원클릭 3대 채널 원고 자동 생성 (클립보드 복사 & 스레드)</span>
                   </button>
                 </div>
               )}
