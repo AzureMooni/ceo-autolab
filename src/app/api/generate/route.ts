@@ -128,11 +128,11 @@ ${JSON.stringify(
       console.warn("Local FreeLLMAPI unreachable, attempting Gemini fallback...");
     }
 
-    // 2. Production Fallback to Gemini 1.5 Flash (0-cost tier)
+    // 2. Production Fallback to Gemini Flash Latest (0-cost tier)
     if (!rawContent && process.env.GEMINI_API_KEY) {
       try {
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -150,7 +150,7 @@ ${JSON.stringify(
         if (geminiRes.ok) {
           const geminiData = await geminiRes.json();
           rawContent = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
-          modelUsed = "gemini-1.5-flash (Cloud Free Tier)";
+          modelUsed = "gemini-flash-latest (Cloud Free Tier)";
         }
       } catch (geminiErr) {
         console.error("Gemini Fallback failed:", geminiErr);

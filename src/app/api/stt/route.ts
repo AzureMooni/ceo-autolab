@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
       console.warn("FreeLLMAPI STT failed, trying OpenAI fallback:", freellmErr);
     }
 
-    // 2. Try Gemini 1.5 Flash Audio Transcription (Cloud-Native & Free)
+    // 2. Try Gemini Flash Audio Transcription (Cloud-Native & Free)
     if (process.env.GEMINI_API_KEY) {
       try {
         const buffer = Buffer.from(await file.arrayBuffer());
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
         const mimeType = file.type || "audio/webm";
 
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
