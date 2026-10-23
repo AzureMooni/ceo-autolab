@@ -44,11 +44,13 @@ const SYSTEM_PROMPT = `
 
 export async function POST(req: NextRequest) {
   try {
-    const { businessName, category, themeTitle, answers, styleGuide } = await req.json();
+    const { businessName, category, themeTitle, answers, speechText, styleGuide } = await req.json();
 
-    if (!answers || !answers.a1 || !answers.a2 || !answers.a3) {
+    const textToProcess = speechText || (answers ? `${answers.a1 || ""} ${answers.a2 || ""} ${answers.a3 || ""}`.trim() : "");
+
+    if (!textToProcess) {
       return NextResponse.json(
-        { error: "1, 2, 3단계 답변을 모두 입력해주세요." },
+        { error: "음성 녹음 내용 또는 3문 3답 내용을 입력해주세요." },
         { status: 400 }
       );
     }
@@ -57,21 +59,23 @@ export async function POST(req: NextRequest) {
     const freellmKey = process.env.FREELLMAPI_API_KEY || "";
     const model = process.env.FREELLMAPI_MODEL || "auto";
 
+    const speechSection = speechText
+      ? `[사장님의 30초 원클릭 음성 구술 내용]
+"${speechText}"
+
+(위 구술 내용 속에서 ① 오늘 있었던 일, ② 손님/학생의 고민과 반응, ③ 우리 매장만의 해결 비법을 스스로 추출하여 비즈니스PT 마케팅 공식으로 승화시켜주세요)`
+      : `[사장님의 3문 3답 인터뷰 내용]
+- [질문 1: 상황 및 에피소드]: ${answers?.a1 || ""}
+- [질문 2: 고객의 고민 및 결핍]: ${answers?.a2 || ""}
+- [질문 3: 매장만의 해결책 및 차별화 노하우]: ${answers?.a3 || ""}`;
+
     const userPrompt = `
 [매장 정보]
 - 상호명: ${businessName || "우리 매장"}
 - 업종/카테고리: ${category || "소상공인 매장"}
 - 인터뷰 주제: ${themeTitle || "매장 스토리 및 전문성"}
 
-[사장님의 3문 3답 인터뷰 내용]
-- [질문 1: 상황 및 에피소드]
-  답변: ${answers.a1}
-
-- [질문 2: 고객의 고민 및 결핍]
-  답변: ${answers.a2}
-
-- [질문 3: 매장만의 해결책 및 차별화 노하우]
-  답변: ${answers.a3}
+${speechSection}
 
 [사장님 문체 가이드]
 ${JSON.stringify(
@@ -85,7 +89,7 @@ ${JSON.stringify(
   2
 )}
 
-위 인터뷰 답변을 바탕으로 네이버 블로그 HTML, 스레드 단문, 인스타그램 캡션을 즉시 작성하여 JSON으로 반환해주세요.
+위 내용을 바탕으로 네이버 블로그 HTML(스마트에디터 인라인 CSS + 사진 배치 마커 3개), 스레드 450자 단문, 인스타그램 캡션을 즉시 작성하여 JSON으로 반환해주세요.
 `;
 
     const response = await fetch(`${freellmUrl}/chat/completions`, {
