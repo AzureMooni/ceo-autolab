@@ -38,7 +38,51 @@ export async function POST(req: NextRequest) {
       console.warn("FreeLLMAPI STT failed, trying OpenAI fallback:", freellmErr);
     }
 
-    // 2. Try OpenAI Whisper fallback if API key is provided
+    // 2. Try Gemini 1.5 Flash Audio Transcription (Cloud-Native & Free)
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const buffer = Buffer.from(await file.arrayBuffer());
+        const base64Audio = buffer.toString("base64");
+        const mimeType = file.type || "audio/webm";
+
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType,
+                        data: base64Audio,
+                      },
+                    },
+                    {
+                      text: "다음 음성을 듣고 한국어로 정확하게 받아써주세요. 어떠한 부가 설명이나 인사말 없이 오직 들린 음성 내용 텍스트만 출력하세요.",
+                    },
+                  ],
+                },
+              ],
+            }),
+          }
+        );
+
+        if (geminiRes.ok) {
+          const geminiData = await geminiRes.json();
+          const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+          if (text) {
+            return NextResponse.json({ text, provider: "gemini-flash-cloud" });
+          }
+        }
+      } catch (geminiErr) {
+        console.warn("Gemini Flash STT failed, trying next fallback:", geminiErr);
+      }
+    }
+
+    // 3. Try OpenAI Whisper fallback if API key is provided
     if (openAiKey) {
       try {
         const sttFormData = new FormData();
