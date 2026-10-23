@@ -1,10 +1,30 @@
 "use client";
 
 import React, { useState } from "react";
-import { Sparkles, Sliders, Eye, Share2, Check, Copy, ExternalLink, Zap, Mic, Store, ArrowRight, ShieldCheck } from "lucide-react";
+import {
+  Sparkles,
+  Sliders,
+  Share2,
+  Check,
+  Copy,
+  ExternalLink,
+  Zap,
+  Store,
+  ArrowRight,
+  ShieldCheck,
+  Award,
+  HelpCircle,
+  Clock,
+  ChevronRight,
+  CheckCircle2,
+} from "lucide-react";
 import VoiceInterviewWizard from "@/components/VoiceInterviewWizard";
 import PublishActionBar from "@/components/PublishActionBar";
 import StyleCloningModal from "@/components/StyleCloningModal";
+import SocialProofSection from "@/components/SocialProofSection";
+import FaqSection from "@/components/FaqSection";
+import Footer from "@/components/Footer";
+import MobileFloatingCta from "@/components/MobileFloatingCta";
 import { copyHtmlToClipboard, copyPlainText } from "@/utils/copyRichText";
 
 interface GeneratedData {
@@ -20,6 +40,7 @@ export default function HomePage() {
   const [generatedData, setGeneratedData] = useState<GeneratedData | null>(null);
   const [activeTab, setActiveTab] = useState<"blog" | "threads" | "insta">("blog");
   const [isStyleModalOpen, setIsStyleModalOpen] = useState<boolean>(false);
+  const [showThankYouModal, setShowThankYouModal] = useState<boolean>(false);
 
   const [copiedType, setCopiedType] = useState<string | null>(null);
 
@@ -56,10 +77,12 @@ export default function HomePage() {
       }
 
       setGeneratedData(json.data);
-      // Auto-scroll to results
+      setShowThankYouModal(true); // Checklist #7: Thank-you conversion trigger
+
+      // Smooth scroll to results
       setTimeout(() => {
         document.getElementById("results-section")?.scrollIntoView({ behavior: "smooth" });
-      }, 200);
+      }, 300);
     } catch (err: any) {
       alert(err?.message || "원고 생성 중 오류가 발생했습니다.");
     } finally {
@@ -93,8 +116,8 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-obsidian-950 pb-28 text-white">
-      {/* Top Navigation */}
+    <div className="min-h-screen bg-obsidian-950 pb-16 text-white">
+      {/* Top Navigation Bar with Internal Linking (Checklist #11) */}
       <header className="sticky top-0 z-30 border-b border-obsidian-800 bg-obsidian-950/80 backdrop-blur-md">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3 sm:px-6">
           <div className="flex items-center gap-3">
@@ -114,11 +137,18 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* FreeLLMAPI Zero-Cost Indicator */}
+          <div className="flex items-center gap-3">
+            {/* Quick Anchor Navigation */}
+            <nav className="hidden md:flex items-center gap-4 text-xs font-medium text-slate-300">
+              <a href="#wizard" className="hover:text-emerald-brand transition">인터뷰</a>
+              <a href="#social-proof" className="hover:text-emerald-brand transition">실사례</a>
+              <a href="#faq" className="hover:text-emerald-brand transition">FAQ</a>
+            </nav>
+
+            {/* Zero-Cost Router Indicator */}
             <div className="hidden items-center gap-1.5 rounded-lg border border-obsidian-700 bg-obsidian-900 px-2.5 py-1 text-[11px] text-slate-300 sm:flex">
               <span className="h-2 w-2 rounded-full bg-emerald-brand animate-pulse" />
-              <span>원가 0원 고성능 라우터 가동 중</span>
+              <span>원가 0원 고성능 라우터</span>
             </div>
 
             {/* Style Cloning Trigger */}
@@ -127,34 +157,46 @@ export default function HomePage() {
               className="flex items-center gap-1.5 rounded-xl border border-obsidian-700 bg-obsidian-900 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-emerald-brand hover:text-white"
             >
               <Sliders className="h-3.5 w-3.5 text-emerald-brand" />
-              <span>문체 복제 설정</span>
+              <span>문체 복제</span>
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content Area */}
+      {/* Main Container */}
       <main className="mx-auto max-w-4xl px-4 pt-8 sm:px-6">
-        {/* Hero Section */}
-        <div className="mb-8 text-center sm:text-left">
-          <div className="inline-flex items-center gap-2 rounded-full border border-obsidian-700 bg-obsidian-900/60 px-3 py-1 text-xs text-slate-300 mb-3">
+        {/* Breadcrumb Navigation (Checklist #12) */}
+        <div className="mb-4 flex items-center gap-1.5 text-[11px] text-slate-400">
+          <span>홈</span>
+          <ChevronRight className="h-3 w-3 text-slate-600" />
+          <span className="text-emerald-brand font-medium">1분 음성 인터뷰 및 3대 채널 원클릭 발행</span>
+        </div>
+
+        {/* Above-the-Fold Hero Section (Checklist #2) */}
+        <section className="mb-10 text-center sm:text-left">
+          <div className="inline-flex items-center gap-2 rounded-full border border-obsidian-700 bg-obsidian-900/60 px-3 py-1 text-xs text-slate-300 mb-3 backdrop-blur-sm">
             <Sparkles className="h-3.5 w-3.5 text-amber-brand" />
             <span>월 100만 원 마케팅 대행사 대체 솔루션</span>
           </div>
+
           <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-white leading-tight">
             사장님은 본업에만 집중하세요.
             <br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-brand to-emerald-hover">
               1분 말로 하는 인터뷰
             </span>
-            가 3대 채널 원고를 끝냅니다.
+            가 3대 채널 마케팅을 끝냅니다.
           </h1>
-          <p className="mt-2 text-xs sm:text-sm text-slate-400">
+
+          <p className="mt-3 text-xs sm:text-sm text-slate-400 max-w-2xl leading-relaxed">
             타이핑 1글자 안 치고 [네이버 블로그 서식 HTML + 스레드 450자 + 인스타 캡션]을 동시에 뽑아 1초 만에 발행합니다.
+            <span className="block mt-1 text-slate-500 text-xs">
+              ✓ 100% 무료 체험 3회 제공 &nbsp;|&nbsp; ✓ 신용카드 등록 없음 &nbsp;|&nbsp; ✓ 네이버 스마트에디터 서식 완벽 보존
+            </span>
           </p>
 
           {/* Quick Business Name Bar */}
-          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-obsidian-800 bg-obsidian-900/40 p-2.5 sm:w-fit">
+          <div className="mt-5 flex flex-wrap items-center gap-2 rounded-xl border border-obsidian-800 bg-obsidian-900/40 p-2.5 sm:w-fit backdrop-blur-sm">
             <div className="flex items-center gap-1.5 text-xs text-slate-400 pl-1">
               <Store className="h-4 w-4 text-emerald-brand" />
               <span>매장/상호명:</span>
@@ -168,16 +210,16 @@ export default function HomePage() {
             />
             <span className="text-[11px] text-slate-500 hidden sm:inline">(원고 제목과 본문에 자동 반영됩니다)</span>
           </div>
-        </div>
+        </section>
 
-        {/* Wizard Section */}
-        <section className="mb-12">
+        {/* Wizard Section (Anchor: #wizard) */}
+        <section id="wizard" className="mb-14 scroll-mt-20">
           <VoiceInterviewWizard onGenerate={handleGenerate} isGenerating={isGenerating} />
         </section>
 
         {/* Generated Results Section */}
         {generatedData && (
-          <section id="results-section" className="mb-12 animate-fade-in scroll-mt-20">
+          <section id="results-section" className="mb-14 animate-fade-in scroll-mt-20">
             <div className="rounded-2xl border border-emerald-brand/40 bg-obsidian-900 p-5 shadow-2xl sm:p-7">
               {/* Header */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-obsidian-800 pb-4 mb-6">
@@ -317,41 +359,19 @@ export default function HomePage() {
           </section>
         )}
 
-        {/* Feature Highlights & Trust Badges */}
-        <section className="mt-12 grid grid-cols-1 sm:grid-cols-3 gap-4 border-t border-obsidian-800 pt-8 text-xs text-slate-400">
-          <div className="flex items-start gap-3 rounded-xl border border-obsidian-800 bg-obsidian-900/30 p-4">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-brand/10 text-emerald-brand">
-              <ShieldCheck className="h-4 w-4" />
-            </div>
-            <div>
-              <div className="font-bold text-white mb-0.5">네이버 블로그 100% 서식 보존</div>
-              <p>스마트에디터 인라인 CSS로 글자 크기, 볼드체, 인용구, 사진 배치 마커까지 한 번에 복사됩니다.</p>
-            </div>
-          </div>
+        {/* Social Proof & Case Studies Section (Anchor: #social-proof, Checklist #4) */}
+        <div id="social-proof" className="scroll-mt-20">
+          <SocialProofSection />
+        </div>
 
-          <div className="flex items-start gap-3 rounded-xl border border-obsidian-800 bg-obsidian-900/30 p-4">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white">
-              <Share2 className="h-4 w-4" />
-            </div>
-            <div>
-              <div className="font-bold text-white mb-0.5">스레드 1초 인텐트 발행</div>
-              <p>복잡한 API 연동 없이 메타 스레드 글쓰기 화면으로 원고를 자동 주입하여 즉시 발행합니다.</p>
-            </div>
-          </div>
-
-          <div className="flex items-start gap-3 rounded-xl border border-obsidian-800 bg-obsidian-900/30 p-4">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-brand/10 text-amber-brand">
-              <Sliders className="h-4 w-4" />
-            </div>
-            <div>
-              <div className="font-bold text-white mb-0.5">사장님 문체 클로닝 해자</div>
-              <p>기존 글을 학습하여 "안녕하세요 오늘은" 같은 AI 말투를 원천 차단하고 사장님 어투를 유지합니다.</p>
-            </div>
-          </div>
-        </section>
+        {/* FAQ Section (Anchor: #faq, Checklist #5) */}
+        <FaqSection />
       </main>
 
-      {/* Floating Action Bar */}
+      {/* Footer (Checklist #6, #17, #18) */}
+      <Footer />
+
+      {/* Floating Action Bar when generated */}
       {generatedData && (
         <PublishActionBar
           naverBlogHtml={generatedData.naver_blog_html}
@@ -361,6 +381,9 @@ export default function HomePage() {
         />
       )}
 
+      {/* Mobile Sticky CTA (Checklist #3) */}
+      <MobileFloatingCta hasGeneratedData={Boolean(generatedData)} />
+
       {/* Style Cloning Modal */}
       <StyleCloningModal
         isOpen={isStyleModalOpen}
@@ -368,6 +391,31 @@ export default function HomePage() {
         currentStyle={styleGuide}
         onSaveStyle={(newStyle) => setStyleGuide(newStyle)}
       />
+
+      {/* Thank-You Conversion Modal (Checklist #7) */}
+      {showThankYouModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-brand/40 bg-obsidian-900 p-6 text-center shadow-2xl">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-brand/20 text-emerald-brand mb-4">
+              <CheckCircle2 className="h-8 w-8" />
+            </div>
+            <h3 className="text-lg font-bold text-white">원고 작성이 5초 만에 끝났습니다!</h3>
+            <p className="mt-2 text-xs text-slate-300 leading-relaxed">
+              사장님의 3문 3답 음성이 전문 마케팅 원고로 완벽히 변환되었습니다.
+              <br />
+              아래 버튼을 눌러 스레드 1초 발행이나 네이버 블로그 서식 복사를 진행해보세요.
+            </p>
+            <div className="mt-6">
+              <button
+                onClick={() => setShowThankYouModal(false)}
+                className="w-full rounded-xl bg-emerald-brand py-3 text-xs font-bold text-obsidian-950 hover:bg-emerald-hover transition"
+              >
+                결과 확인하고 1초 발행하기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
